@@ -187,9 +187,4 @@ Instructions to hand in your analysis:
  - Think about how to query/select the parts of the data needed in your analysis before you import it via `ff` or `bigmemory`. Quite likely, you do not need all the covariates for your research question. (Generating a chunked up representation of the entire database via the `ff` approach would likely take very long to process!)
  - Inspiration? Think about how we have analyzed the taxi data in the course and how we came up with one figure making a point about tipping behavior. Browse the scientific literature on campaign contributions, browse the public debates about campaign contributions in the US, etc.
  
- 
- 
- 
---------------------- END OF THE EXAM ------------------
 
-# BigDataPipeline
