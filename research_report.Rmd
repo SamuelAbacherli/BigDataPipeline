@@ -1,0 +1,536 @@
+---
+title: "Campaign Finance: Research Report"
+subtitle: "Big Data Statistics for R and Python: Group Examination of Part I"
+author:
+- Samuel Abächerli
+- Raphael Summermatter
+date: "26/04/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Part I: Step-by-step implementation (15 points)
+
+
+## Task 1: Data gathering
+
+### Solution
+
+```{r Task 1, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+
+# SET UP -----------------------------------------------------------------------
+# load packages
+library(parallel)
+library(data.table)
+library(pryr)
+library(zip)  # to use zip() on windows
+
+# store the memory used by R
+startingmemory <- mem_used()
+
+# fixed variables
+full.base.url <- "http://datacommons.s3.amazonaws.com/subsets/td-20140324/contributions.fec.1990.csv.zip"
+kOutputPath <- "./data/fec.csv"
+kStartYear <- 1990
+kEndYear <- 2014
+kExDir <- "./data"
+
+# BUILD URLS -------------------------------------------------------------------
+# parse base url
+stripped.base.url <- gsub("1990.csv.zip", "", full.base.url)
+
+# build urls
+years.character <- as.character(seq(from = kStartYear, to = kEndYear, by = 2))
+data.urls <- paste0(stripped.base.url, years.character, ".csv.zip")
+
+# DOWNLOAD AND APPEND FILES ----------------------------------------------------
+# define number of cores
+ncores <- parallel::detectCores()
+
+# download files from urls in parallel and append them
+time.elapsed <- 
+  system.time(
+    mclapply(data.urls, FUN = function(url) fwrite(fread(paste0("curl ", url, " | funzip"), fill = TRUE), file = kOutputPath, append = T), mc.cores = ncores)
+  )
+
+# profiling
+time.elapsed
+mem_used() - startingmemory
+
+# zip file
+zip(zipfile = "./data/fec.csv.zip", files = kOutputPath, compression_level = 1)
+
+```
+
+### Exposition of the solution
+
+**Which approach did you take to import CSVs and how does it basically work?**
+ 
+We use curl and the bash command 'funzip' to download and unzip the files in the zip archive, whereby only the first file is used and all additional files ignored. One could also use 'tar' instead to extract a specific file, however, this was not required for our implementation. We use the fread and fwrite functions from the data.table package to quickly read in the data and append it to the output file. We use a parallel version of lapply to improve the speed as much as possible. Due to relying on forking the command is unavailable on Windows unless mc.cores is set to 1.
+
+**Why might it make sense to download the entire data set as individual parts (batches) instead of downloading the one large zip-file containing all data?**
+ 
+Downloading seperate files means R has to read in smaller files at once. Furthermore, it allows the appending of already downloaded files while simultaneously downloading other files instead of having to wait until the entire dataset is downloaded. Hence, reading data in chunks exercts less pressure on the memory and is faster.
+
+**What is the purpose of unzipping and zipping/compressing the data in this context?**
+
+Zip files compress data and therefore save time and space on the hard drive as well as make the downloading of the data much faster.
+
+## Task 2: Data storage and databases
+
+### Solution
+
+```{r Task 2, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+
+# SET UP -----------------------------------------------------------------------
+# load packages
+library(DBI)
+library(data.table)
+library(rvest)
+library(RSQLite)
+library(pryr)
+
+startingmemory <- mem_used()
+
+# create file and initiate the database
+con.fec <- dbConnect(RSQLite::SQLite(), "./data/fec.sqlite")
+
+# DOWNLOADING DATA -------------------------------------------------------------
+# scraping transaction type data
+dictionary <- read_html("https://classic.fec.gov/finance/disclosure/metadata/DataDictionaryTransactionTypeCodes.shtml")
+transactiontypes <- na.omit(dictionary %>%
+  html_nodes("table") %>%
+  .[[1]] %>%
+  html_table(header = TRUE, trim = TRUE, fill = TRUE))
+names(transactiontypes) <- c("transaction_type", "transaction_description")
+
+# download industry code data
+data_url <- "http://assets.transparencydata.org.s3.amazonaws.com/docs/catcodes.csv"
+col.names <- c("source",
+               "contributor_category", 
+               "name", 
+               "industry", 
+               "order")
+col.classes <- c(V1 = "factor",
+                 V2 = "factor",
+                 V3 = "character",
+                 V4 = "character",
+                 V5 = "factor")
+industrycodes <- fread(data_url,
+                       nrows = 1000000,
+                       header = FALSE,
+                       col.names = col.names,
+                       colClasses = col.classes)
+industrycodes <- industrycodes[-1,]
+
+# read column names of the fec data set
+col.names <- colnames(fread("./data/fec.csv", nrows = 0))
+
+# define column classes explicitly
+class.list <- c("integer",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "character",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "integer",
+                 "date",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor",
+                 "factor")
+
+col.classes <- setNames(class.list, col.names)
+
+# DEFINING FUNCTIONS -----------------------------------------------------------
+
+# a function to write csv files to sqlite database
+csv2sqlite <- function(csv.file, sqlite.file, table.name, N = 1000000) {
+  
+  # connect to database
+  con <- dbConnect(RSQLite::SQLite(), dbname=sqlite.file)
+  
+  # read the data from the beginning of the CSV
+  iter <- 0
+  rowsread <- 0
+  while(TRUE) {
+    cat("Iteration:", iter, "\n")
+    # skip = iter*N + 1.  the "+1" is because we can now skip the header
+    # the "%>% as.data.frame" is because dbWriteTable is a bit fussy on data structure
+    df <- fread(csv.file, 
+                header = TRUE, 
+                col.names = col.names, 
+                colClasses= class.list, 
+                skip = iter*N+1, 
+                nrows = N) %>% as.data.frame
+    if (nrow(df) == 0) {
+      cat("Out of rows...\n")
+      break
+    }
+    rowsread <- rowsread + nrow(df)
+    cat("Rows read:", nrow(df), "  total so far:", rowsread, "\n")
+    if (iter == 0) {
+      dbWriteTable(con, table.name, df, overwrite=TRUE)
+    } else {
+      dbWriteTable(con, table.name, df, append=TRUE)
+    }
+    iter <- iter + 1
+  }
+  cat("Total Read:", rowsread, "\n")
+  
+  # close the open connection again
+  dbDisconnect(con)
+}
+
+# WRITE DATA -------------------------------------------------------------------
+# add tables to database
+csv2sqlite(csv.file = "./data/fec.csv", sqlite.file = "./data/fec.sqlite", table.name = "donations")
+dbWriteTable(con.fec, "transactiontypes", transactiontypes, overwrite = TRUE)
+dbWriteTable(con.fec, "industrycodes", industrycodes, overwrite = TRUE)
+
+# create indicies for all tables on the relevant columns
+transactions.index <- "CREATE INDEX idx_transactiontypes ON transactiontypes (transaction_type, transaction_description)"
+dbExecute(con.fec, transactions.index)
+
+codes.index <- "CREATE INDEX idx_industrycodes ON industrycodes (contributor_category, industry)"
+dbExecute(con.fec, codes.index)
+
+donations.index <- "CREATE INDEX idx_donations ON donations (amount, contributor_type, contributor_category, cycle, recipient_name, recipient_type, seat)"
+dbExecute(con.fec, donations.index)
+
+# FINISH UP --------------------------------------------------------------------
+# disconnect from the database
+dbDisconnect(con.fec)
+
+```
+
+### Exposition of the solution
+
+**Explain first why it makes sense to keep the three data sets in three different tables. Then explain what you did to optimize the database and (in simple terms) why your optimization improves the database in comparison to the same database without any optimization (all columns as `TEXT` and no indices). Is it faster? Does it use less storage space? Why?**
+
+SQLite is a relational database. Forcing all data sets into one table would require the dimensions of the two data sets to match either horizontally (union) or vertically (join). As this is not the case by default, it would requiree a vast amount of redundant entries. Furthermore, querying through smaller databases is much faster.
+
+In order to optimize the database, the column classes were defined prior to creating the databases. This reduces the size of the database, as, for exmple, categorical character variables can be stored as factor variables instead, which are less memory intensive in binary format, as only keeping track of the level numbers is sufficient (as long as their is a levels key to decode the level numbers). Secondly, we indexed the columns of interest, which speeds up the process of querying significantly by reducing the number of database data pages that have to be scanned. The index determines the physical order ot the data in the table.
+
+## Task 3: Data aggregation 
+
+### Solution
+
+```{r Task 3, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+
+# SET UP -----------------------------------------------------------------------
+# load packages
+library(DBI)
+library(pryr)
+library(data.table)
+
+mem_used()
+
+# connect to database
+con.fec <- dbConnect(RSQLite::SQLite(), "./data/fec.sqlite")
+
+# TABLE 1 ----------------------------------------------------------------------
+# define queries
+query.contribtions.oilgas <- 
+  "SELECT amount FROM donations WHERE transaction_type IN (SELECT transaction_type FROM transactiontypes WHERE transaction_description = 'Contribution to political committees (other than Super PACs and Hybrid PACs) from an individual, partnership or limited liability company') AND contributor_category IN (SELECT contributor_category FROM industrycodes WHERE industry = 'OIL & GAS') AND amount > 0"
+query.contribtions.all <- 
+  "SELECT amount FROM donations WHERE transaction_type IN (SELECT transaction_type FROM transactiontypes WHERE transaction_description = 'Contribution to political committees (other than Super PACs and Hybrid PACs) from an individual, partnership or limited liability company') AND amount > 0"
+
+# add up query results using vectorization
+time.oilgas <- 
+  system.time(
+    dt <- dbGetQuery(con.fec, query.contribtions.oilgas)
+  )
+contributions.oilgas <- sum(as.numeric(dt$amount))
+rm(dt)
+
+time.all <- 
+  system.time(
+    dt <- dbGetQuery(con.fec, query.contribtions.all)
+  )
+contributions.all <- sum(as.numeric(dt$amount))
+rm(dt)
+
+# create data frame with formatted numbers
+query.result <- data.frame(Total = format(contributions.oilgas, scientific = FALSE, digits = 2), Relative = format(contributions.oilgas / contributions.all, scientific = FALSE, digits = 2))
+
+# profiling
+time.oilgas
+time.all
+
+# create table in database
+dbWriteTable(con.fec, "contributions", query.result, overwrite = TRUE)
+
+# cleaning up
+rm(query.result, contributions.all, contributions.oilgas, time.all, time.oilgas, query.contribtions.all, query.contribtions.oilgas)
+
+# TABLE 2 ----------------------------------------------------------------------
+# predetermine the table dimensions
+dt.final <- data.table("1990" = rep(NA, 5),
+                       "1992" = rep(NA, 5),
+                       "1994" = rep(NA, 5),
+                       "1996" = rep(NA, 5),
+                       "1998" = rep(NA, 5),
+                       "2000" = rep(NA, 5),
+                       "2002" = rep(NA, 5),
+                       "2004" = rep(NA, 5),
+                       "2006" = rep(NA, 5),
+                       "2008" = rep(NA, 5),
+                       "2010" = rep(NA, 5),
+                       "2012" = rep(NA, 5),
+                       "2014" = rep(NA, 5))
+
+# define queries
+query.all.base <- 
+  "SELECT recipient_name, amount, seat, recipient_type, cycle FROM donations WHERE seat = 'federal:president' AND recipient_type == 'P' AND amount > 0 AND cycle == "
+query.unique.base <- 
+  "SELECT DISTINCT recipient_name, seat, recipient_type, cycle FROM donations WHERE seat = 'federal:president' AND recipient_type == 'P' AND amount > 0 AND cycle == "
+
+# fixed variables
+kStartYear <- 1990
+kEndYear <- 2014
+
+# build urls
+years.character <- as.character(seq(from = kStartYear, to = kEndYear, by = 2))
+query.recipients.all <- paste0(query.all.base, years.character)
+query.recipients.unique <- paste0(query.unique.base, years.character)
+
+# create the data table
+time.loop <- 
+  system.time(
+    for (i in 1:length(query.recipients.all)) {
+      dt.all <- dbGetQuery(con.fec, query.recipients.all[i])
+      dt.unique <- dbGetQuery(con.fec, query.recipients.unique[i])
+      dt.unique$amount <- 0
+      for (x in 1:nrow(dt.unique)) {
+        dt.unique[x, 5] <- sum(subset(dt.all, recipient_name == dt.unique[x, 1])$amount)
+        dt.unique <- dt.unique[order(-dt.unique$amount), ]
+        dt.unique <- dt.unique[1:5,]
+        dt.cycle <- dt.unique[1, 4]
+        dt.final[, which(colnames(dt.final) == dt.cycle)] <- dt.unique$recipient_name
+      }
+    }
+  )
+
+# profiling
+time.loop
+
+# create table in database
+dbWriteTable(con.fec, "recipients", dt.final, overwrite = TRUE)
+
+# cleaning up
+rm(dt.final, dt.unique, dt.all, query.recipients.all, query.recipients.unique, kStartYear, kEndYear, query.all.base, query.unique.base, i, dt.cycle, x, time.loop, years.character)
+
+# TABLE 3 ----------------------------------------------------------------------
+# predetermine the table dimensions
+dt.final <- data.table('Year' = c('1990', '1992', '1994', '1996', '1998', '2000', '2002', '2004', '2006', '2008', '2010', '2012', '2014'),
+                       'BUSINESS ASSOCIATIONS' = rep(NA, 13),
+                       'PUBLIC SECTOR UNIONS' = rep(NA, 13),
+                       'INDUSTRIAL UNIONS' = rep(NA, 13),
+                       'NON-PROFIT INSTITUTIONS' = rep(NA, 13),
+                       'RETIRED' = rep(NA, 13))
+dt.final <- as.data.frame(dt.final)
+
+# download data
+data_url <- "http://assets.transparencydata.org.s3.amazonaws.com/docs/catcodes.csv"
+col.names <- c("source",
+               "contributor_category", 
+               "name", 
+               "industry", 
+               "order")
+col.classes <- c(V1 = "factor",
+                 V2 = "factor",
+                 V3 = "character",
+                 V4 = "character",
+                 V5 = "factor")
+industrycodes <- fread(data_url,
+                       nrows = 1000000,
+                       header = FALSE,
+                       col.names = col.names,
+                       colClasses = col.classes)
+industrycodes <- industrycodes[-1,]
+industrycodes <- data.frame(lapply(industrycodes, as.character), stringsAsFactors = FALSE)
+industrynames <- c('BUSINESS ASSOCIATIONS', 'PUBLIC SECTOR UNIONS', 'INDUSTRIAL UNIONS', 'NON-PROFIT INSTITUTIONS', 'RETIRED')
+
+# define query
+query.all.base <- 
+  "SELECT amount, contributor_type, contributor_category, cycle FROM donations WHERE amount < 1000 AND contributor_type == 'I' AND cycle = "
+
+# fixed variables
+kStartYear <- 1990
+kEndYear <- 2014
+
+# build urls
+years.character <- as.character(seq(from = kStartYear, to = kEndYear, by = 2))
+query.industry.all <- paste0(query.all.base, years.character)
+
+# performing aggregation
+i <- 1
+time.industry <- 
+  system.time(
+    for (i in 1:length(query.industry.all)) {
+      dt.all <- dbGetQuery(con.fec, query.industry.all[i])
+      for (name in industrynames) {
+        list <- industrycodes[which(industrycodes$industry == name), ]
+        amount <- 0
+        for (x in 1:nrow(list)) {
+          code <- list[x,2]
+          amount <- amount + sum(dt.all[which(dt.all$contributor_category == code), ]$amount)
+        }
+        dt.final[i, which(colnames(dt.final) == name)] <- amount
+      }
+      i <- i + 1
+    }
+  )
+
+# profiling
+time.industry
+
+# create table in database
+dt.final <- as.data.table(dt.final)
+dbWriteTable(con.fec, "industries", dt.final, overwrite = TRUE)
+
+# cleaning up
+rm(col.classes, col.names, data_url, i, industrynames, kEndYear, kStartYear, name, query.all.base, query.industry.all, time.industry, x, years.character, dt.all, dt.final, industrycodes, list, code, amount)
+
+# FINISH UP --------------------------------------------------------------------
+# disconnect from the database
+dbDisconnect(con.fec)
+```
+
+### Exposition of the solution
+
+**Use the exposition of your solution to motivate your approach and explain your considerations regarding efficiency. There are various correct solutions here. In any event, work with the assumption that your solution will be tested on a laptop with 16GB RAM (not a cluster computer in the cloud).**
+
+The approach used for aggregating the data relies on SQL to query the database while and then on the data.table package to aggregate and manipulate the data. The where conditions are order such that the query returning the least amount of results preceeds all larger ones, such that each subsequent query has fewer items to deal with.
+
+## Task 4: Visualization
+
+### Solution
+
+```{r Task 4, echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+# SET UP -----------------------------------------------------------------------
+# load packages
+library(DBI)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(kableExtra)
+library(viridis)
+
+con.fec <- dbConnect(RSQLite::SQLite(), "./data/fec.sqlite")
+
+dt <- dbGetQuery(con.fec, "SELECT * FROM industries")
+
+# SPAGHETTI CHART --------------------------------------------------------------
+# rearrange the data to long format
+dt.long <- gather(dt, Name, Amount, 'BUSINESS ASSOCIATIONS':'RETIRED', factor_key = FALSE)
+
+dt.long %>%
+  select(Year, Name, Amount) %>%
+  arrange(Name) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = F)
+
+dt.long$Year <- as.numeric(dt.long$Year)
+
+# create plot
+spaghettichart <- dt.long %>%
+  ggplot( aes(x = Year, y = Amount)) +
+  geom_line(data = dt.long %>% dplyr::select(-Name), aes(group = 1), color="grey", size=0.5, alpha=0.5) +
+  geom_line(aes(color=Name), color="#69b3a2", size=1.2 )+
+  scale_color_viridis(discrete = TRUE) +
+  theme_gray() +
+  theme(
+    legend.position="none",
+    plot.title = element_text(size=14),
+    panel.grid = element_blank()
+  ) +
+  ggtitle("A spaghetti chart of industries") +
+  facet_wrap(~Name)
+
+# print chart
+print(spaghettichart)
+
+# OUTPUTTING PLOT --------------------------------------------------------------
+pdf("./visuals/spaghettichart.pdf")
+print(spaghettichart)
+dev.off()
+
+# FINISH UP --------------------------------------------------------------------
+# disconnect from the database
+dbDisconnect(con.fec)
+
+```
+
+### Figure notes
+
+<ADD FIGURE NOTES HERE>
+
+### Exposition of the solution
+
+**In the exposition to your solution, explain which type of data format would be your choice to store and share this figure (vector-based formats or raster-based formats) and why.**
+
+Due to the fact that line plots are vector images, outputting the graph as a vector image will be of higher quality at a lower size with our modest number of points. Additionally, saving the plot as a vector image allows for flexible resizing without losing image quality. We output our plot to a pdf file in the visualizations folder for publication.
+
+
+
+# Part II: Data Visualization and Data Analysis (10 points)
+
+## The Probability of Winning: The Role of Contributions and Incumbents
+
+### Summary
+
+If we only look at a few resent presidents of the United States of America, one can see that they have something in common: They were rich. It is probably no coincidence that high political positions are held by people who can afford long and expensive campaigns. Nonetheless, great amounts of contributions to politicians are made every year. Therefore, it is useful to ask, if this support helps the candidates to increase their chances of winning the seat they are aiming for.
+With the federal records, provided by OpenSecrets.org, the contributions from 1989 to 2014 were analyzed. In a first step, since committees or organizations cannot win seats, the data was filtered to collect donations for politicians only and entries with negative amounts were removed. In a second step, the contributions were summed up for each candidate based on the NIMSP or CRP ID.
+To have an idea about the development of the total sums of the contributions, the yearly amount was illustrated (see graph below). Besides a positive trend over time, high peaks can be observed around the years of presidential elections, especially since the late 90s, but the effect of money on the elections is more of interest. Therefore, we tested with a logistic regression model, if there is a correlation between the amount of contributions and the depending probability of a victory. In addition, we included the dummy variable seat_status as an independent to the model to check, if a candidate, who is defending the seat, has an advantage.
+The results from the table below show, that money and the probability of winning are not correlated. However, this might not be the whole truth: Not all the candidates might be listed in the data. There might be (independent) candidates, who do not receive donations and lose the elections. If all these cases would be considered too, the result might differ, and one could see, that money matters.
+The other coefficient shows a positive relation between already holding a seat and the probability of winning. This means, a politician trying to defend his seat, has a higher chance to win the election, than his opponent. Intuitively this makes sense: The candidate running for reelection has experience and can already count on supporters from the previous elections. In addition, if his performance during the last period was convincing, the candidate might even increase the number of supporters.
+Both results of this simple model are supported with a low p-value and therefore, they are highly significant. However, we were only talking about correlation, without considering causation. For such an analysis and a discussion about the quality of the model, more data, further calculations and additional argumentation would be needed, which would go beyond this task.
+
+
+### Results
+
+<ADD YOUR FIGURE AND TABLE HERE>
+![](data/contributions.pdf)
+
+
+
+
+
