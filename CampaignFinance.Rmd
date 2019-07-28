@@ -421,6 +421,8 @@ con.fec <- dbConnect(RSQLite::SQLite(), "./data/fec.sqlite")
 
 dt <- dbGetQuery(con.fec, "SELECT * FROM industries")
 
+dt <- dt %>% mutate(Amount = log(Amount))
+
 # SPAGHETTI CHART --------------------------------------------------------------
 # rearrange the data to long format
 dt.long <- gather(dt, Name, Amount, 'BUSINESS ASSOCIATIONS':'RETIRED', factor_key = FALSE)
