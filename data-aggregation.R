@@ -1,6 +1,3 @@
-# set working directory
-setwd("/Users/samu_hugo/Google Drive/Career/Education/Universität St. Gallen/3_Spring 2019/Big Data Analytics for R & Python (4)/Assignment 1/group-examination-localbini/code")
-
 # SET UP ----------------
 # load packages
 library(DBI)
