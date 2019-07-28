@@ -403,7 +403,7 @@ rm(col.classes, col.names, data_url, i, industrynames, kEndYear, kStartYear, nam
 dbDisconnect(con.fec)
 ```
 
-## Task 4: Visualization
+## Visualization
 
 ```{r Task 4, echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
 
