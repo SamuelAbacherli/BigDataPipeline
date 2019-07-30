@@ -1,19 +1,4 @@
----
-title: "Campaign Finance"
-subtitle: "A Big Data Pipeline"
-author:
-- Samuel Abächerli
-date: "26/04/2019"
-output: html_document
----
-
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
-
 ## Data gathering
-
-```{r Task 1, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
 
 # SET UP -----------------------------------------------------------------------
 # load packages
@@ -57,11 +42,8 @@ mem_used() - startingmemory
 # zip file
 zip(zipfile = "./data/fec.csv.zip", files = kOutputPath, compression_level = 1)
 
-```
 
 ## Data storage and databases
-
-```{r Task 2, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
 
 # SET UP -----------------------------------------------------------------------
 # load packages
@@ -217,11 +199,8 @@ dbExecute(con.fec, donations.index)
 # disconnect from the database
 dbDisconnect(con.fec)
 
-```
 
 ## Data aggregation 
-
-```{r Task 3, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
 
 # SET UP -----------------------------------------------------------------------
 # load packages
@@ -401,11 +380,9 @@ rm(col.classes, col.names, data_url, i, industrynames, kEndYear, kStartYear, nam
 # FINISH UP --------------------------------------------------------------------
 # disconnect from the database
 dbDisconnect(con.fec)
-```
+
 
 ## Visualization
-
-```{r Task 4, echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
 
 # SET UP -----------------------------------------------------------------------
 # load packages
@@ -461,5 +438,3 @@ dev.off()
 # FINISH UP --------------------------------------------------------------------
 # disconnect from the database
 dbDisconnect(con.fec)
-
-```
